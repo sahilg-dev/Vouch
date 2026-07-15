@@ -111,12 +111,62 @@ app.MapPost("/api/ingest", async (IngestRequest req, JobIngestionService ingest)
     return Results.Ok(await ingest.IngestAndMatchAsync(req));
 });
 
+// Add a posting by hand.
+//
+// Ingestion can only ever see Adzuna, Greenhouse and Lever. Most large employers
+// (Kaiser Permanente, Westat, anyone on Taleo/Workday/iCIMS) run their own ATS and
+// appear on none of them — so the aggregators structurally cannot reach the job you
+// most want to apply to. Paste the JD instead; everything downstream (scoring, the
+// Honesty Ledger, the Defense Pack) works identically once the posting exists.
+//
+// PostedAt defaults to now, so the next /api/ingest run picks this up first when it
+// scores postings that don't yet have a match.
+app.MapPost("/api/jobs", async (CreateJobRequest req, AppDbContext db) =>
+{
+    var errors = new List<string>();
+    if (string.IsNullOrWhiteSpace(req.Title)) errors.Add("Title is required.");
+    if (string.IsNullOrWhiteSpace(req.Company)) errors.Add("Company is required.");
+    if (string.IsNullOrWhiteSpace(req.Description)) errors.Add("Description is required.");
+    if (errors.Count > 0) return Results.BadRequest(new { errors });
+
+    var key = DedupeKeys.For(req.Title, req.Company, req.Location);
+
+    // The unique index on DedupeKey would throw on a second paste; return the
+    // existing row instead so re-pasting the same JD is idempotent.
+    var existing = await db.JobPostings.FirstOrDefaultAsync(j => j.DedupeKey == key);
+    if (existing is not null)
+        return Results.Ok(new { id = existing.Id, deduped = true });
+
+    var job = new JobPosting
+    {
+        Id = Guid.NewGuid(),
+        Source = JobSourceType.Manual,
+        ExternalId = key,
+        Title = req.Title.Trim(),
+        Company = req.Company.Trim(),
+        Location = req.Location,
+        IsRemote = req.IsRemote ?? false,
+        ApplyUrl = req.ApplyUrl ?? "",
+        Description = req.Description,
+        PostedAt = req.PostedAt ?? DateTimeOffset.UtcNow,
+        DedupeKey = key
+    };
+
+    db.JobPostings.Add(job);
+    await db.SaveChangesAsync();
+
+    return Results.Created($"/api/jobs/{job.Id}", new { id = job.Id, deduped = false });
+});
+
 app.MapGet("/api/candidates/{id:guid}/matches", async (Guid id, string? sort, AppDbContext db) =>
 {
     var query = db.JobMatches.Include(m => m.JobPosting).Where(m => m.CandidateId == id);
+    // Same NULLs-first trap as the scoring query: Postgres puts undated postings at the
+    // top of a DESC sort, so "most recent" would lead with jobs that have no date at all.
     query = sort == "score"
         ? query.OrderByDescending(m => m.Score)
-        : query.OrderByDescending(m => m.JobPosting!.PostedAt);   // default: most recent first
+        : query.OrderBy(m => m.JobPosting!.PostedAt == null)      // dated postings first
+               .ThenByDescending(m => m.JobPosting!.PostedAt);    // default: most recent first
 
     var matches = await query.Take(200).ToListAsync();
     var result = matches.Where(m => m.JobPosting is not null).Select(m =>

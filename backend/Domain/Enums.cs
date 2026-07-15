@@ -5,7 +5,11 @@ public enum JobSourceType
 {
     Adzuna = 0,
     Greenhouse = 1,
-    Lever = 2
+    Lever = 2,
+
+    /// <summary>Pasted in by hand. Most large employers run their own ATS and are on
+    /// none of the aggregators, so ingestion alone can never reach them.</summary>
+    Manual = 3
 }
 
 /// <summary>

@@ -62,6 +62,15 @@ public record JobMatchResponse(
 
 // ---------- Tailoring ----------
 
+public record CreateJobRequest(
+    string Title,
+    string Company,
+    string Description,
+    string? Location = null,
+    string? ApplyUrl = null,
+    bool? IsRemote = null,
+    DateTimeOffset? PostedAt = null);
+
 public record TailorRequest(Guid CandidateId, Guid JobId);
 
 public record TailoredBullet(

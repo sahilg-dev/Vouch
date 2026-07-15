@@ -17,6 +17,7 @@ export const api = {
     req("/api/candidates", { method: "POST", body: JSON.stringify(body) }),
   getCandidate: (id) => req(`/api/candidates/${id}`),
   ingest: (body) => req("/api/ingest", { method: "POST", body: JSON.stringify(body) }),
+  createJob: (body) => req("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   matches: (id, sort = "recent") => req(`/api/candidates/${id}/matches?sort=${sort}`),
   tailor: (candidateId, jobId) =>
     req("/api/tailor", { method: "POST", body: JSON.stringify({ candidateId, jobId }) }),

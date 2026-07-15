@@ -6,7 +6,7 @@ namespace JobCopilot.Api.OpenAI;
 
 public class OpenAiOptions
 {
-    public string ApiKey { get; set; } = "YOUR_OPENAI_API_KEY";
+    public string ApiKey { get; set; } = "";
     public string Model { get; set; } = "gpt-4.1-mini";
     public string BaseUrl { get; set; } = "https://api.openai.com/v1/responses";
 }

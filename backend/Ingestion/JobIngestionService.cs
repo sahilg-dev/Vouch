@@ -81,9 +81,13 @@ public class JobIngestionService(
             .Select(m => m.JobPostingId)
             .ToListAsync(ct);
 
+        // Postgres sorts NULLs FIRST on a DESC order, so a plain OrderByDescending(PostedAt)
+        // hands every scoring batch to postings with no date at all — starving the ones we
+        // actually know are recent. Push nulls to the back explicitly.
         var toScore = await db.JobPostings
             .Where(j => !alreadyMatched.Contains(j.Id))
-            .OrderByDescending(j => j.PostedAt)
+            .OrderBy(j => j.PostedAt == null)          // false (has a date) sorts first
+            .ThenByDescending(j => j.PostedAt)
             .Take(req.MaxToScore)
             .ToListAsync(ct);
 

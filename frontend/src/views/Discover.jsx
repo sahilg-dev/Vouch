@@ -15,6 +15,11 @@ export default function Discover({ candidate, flash }) {
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
 
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const emptyJob = { title: "", company: "", location: "", applyUrl: "", description: "" };
+  const [pj, setPj] = useState(emptyJob);
+
   const [tailorTarget, setTailorTarget] = useState(null);
   const [applyTarget, setApplyTarget] = useState(null);
   const [tailoredIds, setTailoredIds] = useState({}); // jobId -> tailoredResumeId
@@ -51,6 +56,50 @@ export default function Discover({ candidate, flash }) {
       setError(e.message);
     } finally {
       setIngesting(false);
+    }
+  };
+
+  // Most large employers (Kaiser Permanente, Westat, anyone on Taleo/Workday/iCIMS)
+  // are on none of the aggregators, so search can never reach them. Paste the JD.
+  const addPastedJob = async () => {
+    if (!pj.title.trim() || !pj.company.trim() || !pj.description.trim()) {
+      setError("Title, company and description are required.");
+      return;
+    }
+    setPasting(true);
+    setError(null);
+    try {
+      const res = await api.createJob({
+        title: pj.title.trim(),
+        company: pj.company.trim(),
+        location: pj.location.trim() || null,
+        applyUrl: pj.applyUrl.trim() || null,
+        description: pj.description,
+      });
+
+      // Score it. With no company slugs, ingest fetches nothing from the boards but
+      // still runs the scoring pass over every posting that has no match yet —
+      // which now includes this one, and PostedAt=now puts it first.
+      await api.ingest({
+        candidateId: candidate.id,
+        query: pj.title.trim(),
+        country,
+        greenhouseCompanies: [],
+        leverCompanies: [],
+      });
+
+      flash(
+        res.deduped
+          ? "Already had that job saved — rescored it."
+          : `Added "${pj.title.trim()}" at ${pj.company.trim()} and scored the fit.`
+      );
+      setPj(emptyJob);
+      setShowPaste(false);
+      await load();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPasting(false);
     }
   };
 
@@ -105,6 +154,86 @@ export default function Discover({ candidate, flash }) {
           </button>
         </div>
         {error && <div className="ledger flag"><span className="dot" />{error}</div>}
+      </div>
+
+      <div className="card panel stack" style={{ marginTop: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <span className="eyebrow">Not on a job board?</span>
+            <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>
+              Most large employers run their own ATS and never appear on Adzuna, Greenhouse or Lever.
+              Paste the description and Vouch will score, tailor and defend it the same way.
+            </p>
+          </div>
+          <button className="btn ghost small" onClick={() => setShowPaste((v) => !v)}>
+            {showPaste ? "Cancel" : "Paste a job description"}
+          </button>
+        </div>
+
+        {showPaste && (
+          <>
+            <div className="row">
+              <div>
+                <label>Job title *</label>
+                <input
+                  type="text"
+                  value={pj.title}
+                  onChange={(e) => setPj({ ...pj, title: e.target.value })}
+                  placeholder="Chief Engineer, AI Developer Experience &amp; Platform"
+                />
+              </div>
+              <div>
+                <label>Company *</label>
+                <input
+                  type="text"
+                  value={pj.company}
+                  onChange={(e) => setPj({ ...pj, company: e.target.value })}
+                  placeholder="Kaiser Permanente"
+                />
+              </div>
+            </div>
+            <div className="row">
+              <div>
+                <label>Location</label>
+                <input
+                  type="text"
+                  value={pj.location}
+                  onChange={(e) => setPj({ ...pj, location: e.target.value })}
+                  placeholder="Greensboro, NC"
+                />
+              </div>
+              <div>
+                <label>Apply URL</label>
+                <input
+                  type="text"
+                  value={pj.applyUrl}
+                  onChange={(e) => setPj({ ...pj, applyUrl: e.target.value })}
+                  placeholder="https://..."
+                />
+              </div>
+            </div>
+            <div>
+              <label>Job description *</label>
+              <textarea
+                rows={10}
+                value={pj.description}
+                onChange={(e) => setPj({ ...pj, description: e.target.value })}
+                placeholder="Paste the full posting text here — responsibilities, qualifications, everything."
+              />
+            </div>
+            <div>
+              <button className="btn" onClick={addPastedJob} disabled={pasting}>
+                {pasting ? (
+                  <>
+                    <span className="spinner" /> Adding &amp; scoring fit…
+                  </>
+                ) : (
+                  "Add & score"
+                )}
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "24px 4px 14px" }}>
