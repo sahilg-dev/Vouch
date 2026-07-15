@@ -6,6 +6,7 @@ namespace JobCopilot.Api.Data;
 
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    public DbSet<Account> Accounts => Set<Account>();
     public DbSet<Candidate> Candidates => Set<Candidate>();
     public DbSet<JobPosting> JobPostings => Set<JobPosting>();
     public DbSet<JobMatch> JobMatches => Set<JobMatch>();
@@ -14,6 +15,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<Account>(e =>
+        {
+            e.Property(x => x.Email).HasMaxLength(320);
+            e.HasIndex(x => x.Email).IsUnique();
+        });
+
         b.Entity<Candidate>(e =>
         {
             e.Property(x => x.FullName).HasMaxLength(200);
@@ -21,6 +28,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(x => x.Email);
             e.Property(x => x.ProfileJson).HasColumnType("jsonb");
             e.Property(x => x.FactsJson).HasColumnType("jsonb");
+            e.HasOne(x => x.Account).WithMany().HasForeignKey(x => x.AccountId);
         });
 
         b.Entity<JobPosting>(e =>
@@ -35,6 +43,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         {
             e.Property(x => x.RationaleJson).HasColumnType("jsonb");
             e.HasOne(x => x.JobPosting).WithMany().HasForeignKey(x => x.JobPostingId);
+            e.HasOne(x => x.Candidate).WithMany().HasForeignKey(x => x.CandidateId);
             e.HasIndex(x => new { x.CandidateId, x.JobPostingId }).IsUnique();
         });
 
@@ -45,11 +54,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.ValidationJson).HasColumnType("jsonb");
             e.Property(x => x.DefensePackJson).HasColumnType("jsonb");
             e.Property(x => x.EmphasisTagsJson).HasColumnType("jsonb");
+            e.HasOne(x => x.Candidate).WithMany().HasForeignKey(x => x.CandidateId);
+            e.HasIndex(x => new { x.CandidateId, x.JobPostingId });
         });
 
         b.Entity<Application>(e =>
         {
             e.HasOne(x => x.JobPosting).WithMany().HasForeignKey(x => x.JobPostingId);
+            e.HasOne(x => x.Candidate).WithMany().HasForeignKey(x => x.CandidateId);
             e.HasIndex(x => x.CandidateId);
         });
 

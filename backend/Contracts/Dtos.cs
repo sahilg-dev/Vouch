@@ -1,5 +1,15 @@
 namespace JobCopilot.Api.Contracts;
 
+// ---------- Auth ----------
+
+public record SignupRequest(string Email, string Password);
+
+public record LoginRequest(string Email, string Password);
+
+public record AuthResponse(string Token, Guid AccountId, string Email);
+
+public record MeResponse(Guid AccountId, string Email, List<CandidateResponse> Candidates);
+
 // ---------- Candidate / profile ----------
 
 public record CreateCandidateRequest(
@@ -106,6 +116,8 @@ public record TailorResponse(
     DefensePack DefensePack,
     List<string> EmphasisTags);
 
+public record TailoredVersionSummary(Guid Id, int Version, DateTimeOffset CreatedAt, bool AllSupported);
+
 // ---------- Prefill (review-then-apply; never auto-submits) ----------
 
 public record PrefillRequest(Guid CandidateId, Guid JobId);
@@ -133,6 +145,15 @@ public record InsightsResponse(
     int Responses,
     double ResponseRate,
     List<EmphasisInsight> EmphasisInsights,
-    List<string> Recommendations);
+    List<string> Recommendations,
+    List<FunnelStage> Funnel,
+    List<TrendPoint> Trend,
+    StreakInfo Streak);
 
 public record EmphasisInsight(string Tag, int Used, int Responses, double ResponseRate);
+
+public record FunnelStage(string Status, int Count);
+
+public record TrendPoint(DateOnly WeekStart, int Applied, int Responses);
+
+public record StreakInfo(int CurrentDays, int BestDays);

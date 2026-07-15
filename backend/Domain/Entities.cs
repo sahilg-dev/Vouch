@@ -16,9 +16,20 @@ public abstract class AuditableEntity<TKey> : Entity<TKey>
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
+/// <summary>A login account. Owns one or more Candidate resume profiles.</summary>
+public class Account : AuditableEntity<Guid>
+{
+    /// <summary>Always stored lower-cased/trimmed; uniqueness is enforced on this form.</summary>
+    public string Email { get; set; } = "";
+    public string PasswordHash { get; set; } = "";
+}
+
 /// <summary>The candidate, their contact info, and their parsed "fact base".</summary>
 public class Candidate : AuditableEntity<Guid>
 {
+    public Guid AccountId { get; set; }
+    public Account? Account { get; set; }
+
     public string FullName { get; set; } = "";
     public string Email { get; set; } = "";
     public string? Phone { get; set; }
@@ -69,6 +80,7 @@ public class JobPosting : AuditableEntity<Guid>
 public class JobMatch : AuditableEntity<Guid>
 {
     public Guid CandidateId { get; set; }
+    public Candidate? Candidate { get; set; }
     public Guid JobPostingId { get; set; }
     public JobPosting? JobPosting { get; set; }
 
@@ -86,7 +98,11 @@ public class JobMatch : AuditableEntity<Guid>
 public class TailoredResume : AuditableEntity<Guid>
 {
     public Guid CandidateId { get; set; }
+    public Candidate? Candidate { get; set; }
     public Guid JobPostingId { get; set; }
+
+    /// <summary>1-based attempt number for this candidate+job pair; lets the UI show history.</summary>
+    public int Version { get; set; } = 1;
 
     /// <summary>JSON: the structured tailored resume (summary + sections + bullets).</summary>
     public string ContentJson { get; set; } = "{}";
@@ -119,6 +135,7 @@ public class TailoredResume : AuditableEntity<Guid>
 public class Application : AuditableEntity<Guid>
 {
     public Guid CandidateId { get; set; }
+    public Candidate? Candidate { get; set; }
     public Guid JobPostingId { get; set; }
     public JobPosting? JobPosting { get; set; }
     public Guid? TailoredResumeId { get; set; }

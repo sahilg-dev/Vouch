@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../lib/api.js";
 
-export default function Setup({ candidate, onCandidate, onReset }) {
+export default function Setup({ candidate, onCandidate }) {
   const [form, setForm] = useState({
     fullName: "",
     email: "",
@@ -11,6 +11,7 @@ export default function Setup({ candidate, onCandidate, onReset }) {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [addingAnother, setAddingAnother] = useState(false);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
@@ -35,6 +36,7 @@ export default function Setup({ candidate, onCandidate, onReset }) {
     try {
       const c = await api.createCandidate(form);
       onCandidate(c);
+      setAddingAnother(false);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -74,7 +76,7 @@ export default function Setup({ candidate, onCandidate, onReset }) {
         </div>
       </section>
 
-      {candidate ? (
+      {candidate && !addingAnother ? (
         <div className="card panel stack" style={{ marginTop: 28 }}>
           <span className="eyebrow">Active profile</span>
           <h2 style={{ margin: 0 }}>{candidate.fullName}</h2>
@@ -87,8 +89,8 @@ export default function Setup({ candidate, onCandidate, onReset }) {
             Skills: {candidate.profile.skills.slice(0, 12).join(", ")}
           </p>
           <div>
-            <button className="btn ghost small" onClick={onReset}>
-              Start over with a new resume
+            <button className="btn ghost small" onClick={() => setAddingAnother(true)}>
+              Add another resume profile
             </button>
           </div>
         </div>
@@ -125,7 +127,7 @@ export default function Setup({ candidate, onCandidate, onReset }) {
             />
           </div>
           {error && <div className="ledger flag"><span className="dot" />{error}</div>}
-          <div>
+          <div style={{ display: "flex", gap: 10 }}>
             <button className="btn" onClick={submit} disabled={busy}>
               {busy ? (
                 <>
@@ -135,6 +137,11 @@ export default function Setup({ candidate, onCandidate, onReset }) {
                 "Build my fact base"
               )}
             </button>
+            {candidate && addingAnother && (
+              <button className="btn ghost small" onClick={() => setAddingAnother(false)} disabled={busy}>
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       )}

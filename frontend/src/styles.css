@@ -52,11 +52,12 @@ button { font-family: var(--body); cursor: pointer; }
 
 .nav { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--line);
   border-radius: 999px; padding: 4px; box-shadow: var(--shadow); }
-.nav button {
-  border: 0; background: transparent; color: var(--ink-soft);
+.nav button, .nav a {
+  border: 0; background: transparent; color: var(--ink-soft); text-decoration: none;
   padding: 8px 16px; border-radius: 999px; font-weight: 500; font-size: 14px;
+  display: inline-block; cursor: pointer;
 }
-.nav button.active { background: var(--ink); color: #fff; }
+.nav button.active, .nav a.active { background: var(--ink); color: #fff; }
 .nav button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ---------- cards / surfaces ---------- */

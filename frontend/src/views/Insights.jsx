@@ -1,13 +1,35 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api.js";
+import FunnelChart from "../components/FunnelChart.jsx";
+import TrendSparkline from "../components/TrendSparkline.jsx";
 
 export default function Insights({ candidate }) {
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!!candidate);
 
   useEffect(() => {
+    if (!candidate) return;
+    setLoading(true);
     api.insights(candidate.id).then(setData).finally(() => setLoading(false));
-  }, [candidate.id]);
+  }, [candidate?.id]);
+
+  if (!candidate)
+    return (
+      <div className="card panel stack" style={{ marginTop: 28, maxWidth: 480 }}>
+        <span className="eyebrow">Welcome to Vouch</span>
+        <h2 style={{ margin: 0 }}>Build your first resume profile to see your dashboard.</h2>
+        <p className="lead" style={{ margin: 0 }}>
+          Paste a resume to extract your fact base, then come back here to watch your
+          application funnel and outcome loop.
+        </p>
+        <div>
+          <Link className="btn" to="/setup">
+            Set up your profile
+          </Link>
+        </div>
+      </div>
+    );
 
   if (loading) return <div className="empty"><span className="spinner" /> Crunching your outcomes…</div>;
   if (!data) return <div className="empty">No insights yet.</div>;
@@ -32,6 +54,27 @@ export default function Insights({ candidate }) {
             <div className="big" style={{ color: "var(--verified)" }}>{pct(data.responseRate)}</div>
             <div className="k">response rate</div>
           </div>
+          <div>
+            <div className="big">
+              {data.streak.currentDays}
+              {data.streak.currentDays > 0 && " \u{1F525}"}
+            </div>
+            <div className="k">day streak{data.streak.bestDays > data.streak.currentDays ? ` · best ${data.streak.bestDays}` : ""}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card panel">
+        <span className="eyebrow">Application funnel</span>
+        <div style={{ marginTop: 12 }}>
+          <FunnelChart stages={data.funnel} />
+        </div>
+      </div>
+
+      <div className="card panel">
+        <span className="eyebrow">Weekly activity — last 8 weeks</span>
+        <div style={{ marginTop: 12 }}>
+          <TrendSparkline points={data.trend} />
         </div>
       </div>
 

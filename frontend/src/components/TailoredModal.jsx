@@ -5,7 +5,23 @@ export default function TailoredModal({ candidate, match, onClose, onTailored, f
   const [tab, setTab] = useState("resume");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [downloading, setDownloading] = useState(null);
   const started = useRef(false);
+
+  const download = async (format) => {
+    setDownloading(format);
+    try {
+      await api.downloadTailored(
+        data.tailoredResumeId,
+        format,
+        `${candidate.fullName.replace(/\s+/g, "-")}-${match.company.replace(/\s+/g, "-")}-resume.${format}`
+      );
+    } catch (e) {
+      flash?.(`Download failed: ${e.message}`);
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   useEffect(() => {
     if (started.current) return; // avoid duplicate (paid) calls in StrictMode
@@ -29,9 +45,21 @@ export default function TailoredModal({ candidate, match, onClose, onTailored, f
               {match.title} · {match.company}
             </h2>
           </div>
-          <button className="btn ghost small" onClick={onClose}>
-            Close
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            {data && (
+              <>
+                <button className="btn ghost small" onClick={() => download("pdf")} disabled={downloading !== null}>
+                  {downloading === "pdf" ? "Preparing…" : "Download PDF"}
+                </button>
+                <button className="btn ghost small" onClick={() => download("docx")} disabled={downloading !== null}>
+                  {downloading === "docx" ? "Preparing…" : "Download DOCX"}
+                </button>
+              </>
+            )}
+            <button className="btn ghost small" onClick={onClose}>
+              Close
+            </button>
+          </div>
         </div>
 
         {error && (
