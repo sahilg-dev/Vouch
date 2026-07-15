@@ -1,5 +1,6 @@
 using JobCopilot.Api.Domain;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace JobCopilot.Api.Data;
 
@@ -51,5 +52,31 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasOne(x => x.JobPosting).WithMany().HasForeignKey(x => x.JobPostingId);
             e.HasIndex(x => x.CandidateId);
         });
+
+        // Npgsql maps DateTimeOffset to `timestamptz`, which stores an instant and
+        // therefore rejects any value whose Offset is not zero. Job boards hand us
+        // local offsets (Greenhouse `updated_at` comes back as -04:00), so normalise
+        // every DateTimeOffset to UTC on write rather than trusting each caller to
+        // remember. Reads come back as UTC, which is what timestamptz means anyway.
+        //
+        // Must stay LAST in OnModelCreating: it walks entity types configured above.
+        var toUtc = new ValueConverter<DateTimeOffset, DateTimeOffset>(
+            v => v.ToUniversalTime(),
+            v => v);
+
+        var toUtcNullable = new ValueConverter<DateTimeOffset?, DateTimeOffset?>(
+            v => v.HasValue ? v.Value.ToUniversalTime() : v,
+            v => v);
+
+        foreach (var entityType in b.Model.GetEntityTypes())
+        {
+            foreach (var property in entityType.GetProperties())
+            {
+                if (property.ClrType == typeof(DateTimeOffset))
+                    property.SetValueConverter(toUtc);
+                else if (property.ClrType == typeof(DateTimeOffset?))
+                    property.SetValueConverter(toUtcNullable);
+            }
+        }
     }
 }

@@ -62,7 +62,7 @@ public class InsightsService(AppDbContext db, OpenAiClient ai)
             .ThenByDescending(e => e.Used)
             .ToList();
 
-        var recommendations = applied < 3
+        List<string> recommendations = applied < 3
             ? ["Apply to a few more roles to unlock outcome-based recommendations — the loop needs data to learn from."]
             : await RecommendAsync(applied, responses, emphasisInsights, ct);
 

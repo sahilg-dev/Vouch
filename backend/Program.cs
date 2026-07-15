@@ -16,8 +16,10 @@ var cfg = builder.Configuration;
 string Need(string key, string fallback = "") =>
     Environment.GetEnvironmentVariable(key) ?? cfg[key] ?? fallback;
 
-var connString = Need("DATABASE_URL",
-    "Host=localhost;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=jobcopilot");
+// Accept either name: .env.example documents DATABASE_URL, but DATABASE_CONNECTION
+// is what actually ended up in .env. Reading only one silently ignored the other.
+var connString = Need("DATABASE_URL", Need("DATABASE_CONNECTION",
+    "Host=localhost;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=jobcopilot"));
 
 builder.Services.AddDbContext<AppDbContext>(o => o.UseNpgsql(connString));
 
@@ -51,6 +53,12 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 var app = builder.Build();
 app.UseCors();
+
+// Fail fast and loudly at startup rather than surfacing a 500 on the first
+// resume paste, which is where this used to blow up.
+if (string.IsNullOrWhiteSpace(Need("OPENAI_API_KEY")))
+    app.Logger.LogWarning(
+        "OPENAI_API_KEY is not set. Parsing, matching and tailoring will all fail. Set it in backend/.env.");
 
 // Create schema on first run. For production, use EF migrations instead of EnsureCreated.
 using (var scope = app.Services.CreateScope())

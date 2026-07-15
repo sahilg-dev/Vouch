@@ -23,13 +23,22 @@ public class MatchingService(OpenAiClient ai)
         // Score in chunks so each prompt stays small and the JSON stays reliable.
         foreach (var chunk in jobs.Chunk(5))
         {
+            // Never ask a model to echo back a GUID. Long random strings get mangled,
+            // and a mangled-but-still-parseable GUID produced a JobMatch row pointing
+            // at a JobPosting that never existed -> FK violation at SaveChanges.
+            // Hand out small ordinals the model can copy reliably, and resolve them
+            // back to real ids here, where the mapping is authoritative.
+            var byRef = chunk
+                .Select((job, i) => (Ref: i + 1, Job: job))
+                .ToDictionary(x => x.Ref, x => x.Job);
+
             var sb = new StringBuilder();
             sb.AppendLine("CANDIDATE PROFILE:");
             sb.AppendLine(JsonSerializer.Serialize(profile, Json));
             sb.AppendLine("\nJOBS TO SCORE (score each independently):");
-            foreach (var j in chunk)
+            foreach (var (jobRef, j) in byRef)
             {
-                sb.AppendLine($"--- jobId: {j.Id}");
+                sb.AppendLine($"--- ref: {jobRef}");
                 sb.AppendLine($"Title: {j.Title} | Company: {j.Company} | Location: {j.Location}");
                 sb.AppendLine($"Description: {Truncate(j.Description, 1500)}");
             }
@@ -42,19 +51,27 @@ public class MatchingService(OpenAiClient ai)
                     "headline" is a one-line verdict. "strengths" are concrete reasons this
                     fits; "gaps" are concrete missing or weaker requirements. Be specific and
                     candid; do not inflate scores to be encouraging.
+                    "ref" MUST be copied exactly from the job's "ref" value above.
+                    Return one object per job.
                     Return JSON array of:
-                    { jobId, score, headline, strengths: string[], gaps: string[] }.
+                    { ref, score, headline, strengths: string[], gaps: string[] }.
                     """,
                 userPrompt: sb.ToString(),
                 maxTokens: 2048, ct: ct);
 
             foreach (var item in scored)
-                if (Guid.TryParse(item.JobId, out var id))
-                    results[id] = new MatchScore(
-                        Math.Clamp(item.Score, 0, 100),
-                        item.Headline ?? "",
-                        item.Strengths ?? [],
-                        item.Gaps ?? []);
+            {
+                // Resolve against the authoritative map. A ref the model invented or
+                // hallucinated simply has no entry and is dropped, rather than being
+                // persisted as a dangling foreign key.
+                if (!byRef.TryGetValue(item.Ref, out var job)) continue;
+
+                results[job.Id] = new MatchScore(
+                    Math.Clamp(item.Score, 0, 100),
+                    item.Headline ?? "",
+                    item.Strengths ?? [],
+                    item.Gaps ?? []);
+            }
         }
 
         return results;
@@ -65,7 +82,7 @@ public class MatchingService(OpenAiClient ai)
 
     private class BatchItem
     {
-        public string JobId { get; set; } = "";
+        public int Ref { get; set; }
         public int Score { get; set; }
         public string? Headline { get; set; }
         public List<string>? Strengths { get; set; }

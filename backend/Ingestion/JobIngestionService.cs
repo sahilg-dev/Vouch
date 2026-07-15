@@ -29,22 +29,27 @@ public class JobIngestionService(
             req.GreenhouseCompanies ?? [],
             req.LeverCompanies ?? []);
 
-        // 1) Fetch from every source concurrently.
-        var fetches = sources.Select(s => s.FetchAsync(req.Query, ctx, ct));
+        // 1) Fetch from every source concurrently. Materialise once — `sources` is a
+        // transient DI enumerable, so re-enumerating it constructs a fresh set of
+        // adapters (and a second .Count() would have done exactly that).
+        var sourceList = sources.ToList();
+        var fetches = sourceList.Select(s => s.FetchAsync(req.Query, ctx, ct));
         var raw = (await Task.WhenAll(fetches)).SelectMany(x => x).ToList();
-        log.LogInformation("Fetched {Count} raw jobs from {Sources} sources.", raw.Count, sources.Count());
+        log.LogInformation("Fetched {Count} raw jobs from {Sources} sources.", raw.Count, sourceList.Count);
 
         // 2) Dedupe across sources by stable key, keeping the most recent.
         var deduped = raw
-            .GroupBy(r => DedupeKeys.For(r.Title, r.Company))
+            .GroupBy(r => DedupeKeys.For(r.Title, r.Company, r.Location))
             .Select(g => (Key: g.Key, Job: g.OrderByDescending(j => j.PostedAt ?? DateTimeOffset.MinValue).First()))
             .ToList();
 
         // 3) Upsert postings.
-        var existingKeys = await db.JobPostings
-            .Where(j => deduped.Select(d => d.Key).Contains(j.DedupeKey))
+        var dedupeKeys = deduped.Select(d => d.Key).ToList();
+        var existingKeys = (await db.JobPostings
+            .Where(j => dedupeKeys.Contains(j.DedupeKey))
             .Select(j => j.DedupeKey)
-            .ToListAsync(ct);
+            .ToListAsync(ct))
+            .ToHashSet();
 
         var newPostings = new List<JobPosting>();
         foreach (var (key, j) in deduped)
@@ -88,8 +93,20 @@ public class JobIngestionService(
             var profile = JsonSerializer.Deserialize<CandidateProfile>(candidate.ProfileJson, Json)!;
             var scores = await matching.ScoreBatchAsync(profile, toScore, ct);
 
+            // Second guardrail: only persist matches whose job we actually asked about.
+            // MatchingService already resolves model output against a local map, but a
+            // dangling JobPostingId here becomes an FK violation that fails the whole
+            // batch — so verify at the boundary rather than trusting the layer below.
+            var validJobIds = toScore.Select(j => j.Id).ToHashSet();
+
             foreach (var (jobId, score) in scores)
             {
+                if (!validJobIds.Contains(jobId))
+                {
+                    log.LogWarning("Dropping match for unknown job {JobId} — not in the scored set.", jobId);
+                    continue;
+                }
+
                 db.JobMatches.Add(new JobMatch
                 {
                     Id = Guid.NewGuid(),
