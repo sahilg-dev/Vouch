@@ -1,0 +1,13 @@
+# backend
+bin/
+obj/
+*.user
+.env
+
+# frontend
+node_modules/
+dist/
+.env
+
+# os
+.DS_Store

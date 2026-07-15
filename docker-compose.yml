@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: jobcopilot-db
+    environment:
+      POSTGRES_USER: jobcopilot
+      POSTGRES_PASSWORD: jobcopilot
+      POSTGRES_DB: jobcopilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - jobcopilot_pgdata:/var/lib/postgresql/data
+
+volumes:
+  jobcopilot_pgdata:

@@ -1,0 +1,257 @@
+using System.Text.Json;
+using DotNetEnv;
+using JobCopilot.Api.OpenAI;
+using JobCopilot.Api.Contracts;
+using JobCopilot.Api.Data;
+using JobCopilot.Api.Domain;
+using JobCopilot.Api.Ingestion;
+using JobCopilot.Api.Services;
+using Microsoft.EntityFrameworkCore;
+
+Env.TraversePath().Load();   // load .env if present
+
+var builder = WebApplication.CreateBuilder(args);
+var cfg = builder.Configuration;
+
+string Need(string key, string fallback = "") =>
+    Environment.GetEnvironmentVariable(key) ?? cfg[key] ?? fallback;
+
+var connString = Need("DATABASE_URL",
+    "Host=localhost;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=jobcopilot");
+
+builder.Services.AddDbContext<AppDbContext>(o => o.UseNpgsql(connString));
+
+builder.Services.AddSingleton(new OpenAiOptions
+{
+    ApiKey = Need("OPENAI_API_KEY"),
+    Model = Need("OPENAI_MODEL", "gpt-4.1-mini"),
+    BaseUrl = Need("OPENAI_BASE_URL", "https://api.openai.com/v1/responses")
+});
+builder.Services.AddSingleton(new AdzunaOptions
+{
+    AppId = Need("ADZUNA_APP_ID"),
+    AppKey = Need("ADZUNA_APP_KEY")
+});
+
+builder.Services.AddHttpClient<OpenAiClient>(c => c.Timeout = TimeSpan.FromSeconds(120));
+builder.Services.AddHttpClient<IJobSource, AdzunaJobSource>();
+builder.Services.AddHttpClient<IJobSource, GreenhouseJobSource>();
+builder.Services.AddHttpClient<IJobSource, LeverJobSource>();
+
+builder.Services.AddScoped<ResumeParsingService>();
+builder.Services.AddScoped<MatchingService>();
+builder.Services.AddScoped<TailoringService>();
+builder.Services.AddScoped<PrefillService>();
+builder.Services.AddScoped<InsightsService>();
+builder.Services.AddScoped<JobIngestionService>();
+
+var frontendOrigin = Need("FRONTEND_ORIGIN", "http://localhost:5173");
+builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
+    p.WithOrigins(frontendOrigin).AllowAnyHeader().AllowAnyMethod()));
+
+var app = builder.Build();
+app.UseCors();
+
+// Create schema on first run. For production, use EF migrations instead of EnsureCreated.
+using (var scope = app.Services.CreateScope())
+    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.EnsureCreated();
+
+var Json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok", at = DateTimeOffset.UtcNow }));
+
+// ---------- Candidates ----------
+
+app.MapPost("/api/candidates", async (CreateCandidateRequest req, AppDbContext db, ResumeParsingService parser) =>
+{
+    var validationErrors = ValidateCandidate(req);
+    if (validationErrors.Count > 0) return Results.BadRequest(new { errors = validationErrors });
+
+    var (profile, facts) = await parser.ParseAsync(req.BaseResumeText);
+    var candidate = new Candidate
+    {
+        Id = Guid.NewGuid(),
+        FullName = req.FullName,
+        Email = req.Email,
+        Phone = req.Phone,
+        Location = req.Location,
+        BaseResumeText = req.BaseResumeText,
+        ProfileJson = JsonSerializer.Serialize(profile, Json),
+        FactsJson = JsonSerializer.Serialize(facts, Json)
+    };
+    db.Candidates.Add(candidate);
+    await db.SaveChangesAsync();
+    return Results.Ok(new CandidateResponse(
+        candidate.Id, candidate.FullName, candidate.Email, candidate.Phone, candidate.Location, profile, facts.Count));
+});
+
+app.MapGet("/api/candidates/{id:guid}", async (Guid id, AppDbContext db) =>
+{
+    var c = await db.Candidates.FindAsync(id);
+    if (c is null) return Results.NotFound();
+    var profile = JsonSerializer.Deserialize<CandidateProfile>(c.ProfileJson, Json)!;
+    var facts = JsonSerializer.Deserialize<List<ResumeFact>>(c.FactsJson, Json) ?? [];
+    return Results.Ok(new CandidateResponse(c.Id, c.FullName, c.Email, c.Phone, c.Location, profile, facts.Count));
+});
+
+// ---------- Ingest + match ----------
+
+app.MapPost("/api/ingest", async (IngestRequest req, JobIngestionService ingest) =>
+{
+    var validationErrors = ValidateIngest(req);
+    if (validationErrors.Count > 0) return Results.BadRequest(new { errors = validationErrors });
+    return Results.Ok(await ingest.IngestAndMatchAsync(req));
+});
+
+app.MapGet("/api/candidates/{id:guid}/matches", async (Guid id, string? sort, AppDbContext db) =>
+{
+    var query = db.JobMatches.Include(m => m.JobPosting).Where(m => m.CandidateId == id);
+    query = sort == "score"
+        ? query.OrderByDescending(m => m.Score)
+        : query.OrderByDescending(m => m.JobPosting!.PostedAt);   // default: most recent first
+
+    var matches = await query.Take(200).ToListAsync();
+    var result = matches.Where(m => m.JobPosting is not null).Select(m =>
+    {
+        var r = JsonSerializer.Deserialize<MatchRationale>(m.RationaleJson, Json) ?? new MatchRationale([], []);
+        var j = m.JobPosting!;
+        return new JobMatchResponse(m.Id, j.Id, j.Title, j.Company, j.Location, j.IsRemote, j.ApplyUrl,
+            j.PostedAt, m.Score, m.Headline, r.Strengths, r.Gaps, j.SalaryMin, j.SalaryMax);
+    });
+    return Results.Ok(result);
+});
+
+// ---------- Tailoring (Honesty Ledger + validation + Defense Pack) ----------
+
+app.MapPost("/api/tailor", async (TailorRequest req, AppDbContext db, TailoringService tailoring) =>
+{
+    var candidate = await db.Candidates.FindAsync(req.CandidateId);
+    var job = await db.JobPostings.FindAsync(req.JobId);
+    if (candidate is null || job is null) return Results.NotFound();
+
+    var profile = JsonSerializer.Deserialize<CandidateProfile>(candidate.ProfileJson, Json)!;
+    var facts = JsonSerializer.Deserialize<List<ResumeFact>>(candidate.FactsJson, Json) ?? [];
+
+    var bundle = await tailoring.TailorAsync(profile, facts, job);
+
+    var entity = new TailoredResume
+    {
+        Id = Guid.NewGuid(),
+        CandidateId = req.CandidateId,
+        JobPostingId = req.JobId,
+        ContentJson = JsonSerializer.Serialize(bundle.Content, Json),
+        DiffJson = JsonSerializer.Serialize(bundle.Diff, Json),
+        ValidationJson = JsonSerializer.Serialize(bundle.Validation, Json),
+        CoverNote = bundle.CoverNote,
+        DefensePackJson = JsonSerializer.Serialize(bundle.DefensePack, Json),
+        EmphasisTagsJson = JsonSerializer.Serialize(bundle.EmphasisTags, Json)
+    };
+    db.TailoredResumes.Add(entity);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new TailorResponse(entity.Id, bundle.Content, bundle.Diff, bundle.Validation,
+        bundle.CoverNote, bundle.DefensePack, bundle.EmphasisTags));
+});
+
+app.MapGet("/api/tailored/{id:guid}", async (Guid id, AppDbContext db) =>
+{
+    var t = await db.TailoredResumes.FindAsync(id);
+    if (t is null) return Results.NotFound();
+    return Results.Ok(new TailorResponse(
+        t.Id,
+        JsonSerializer.Deserialize<TailoredContent>(t.ContentJson, Json)!,
+        JsonSerializer.Deserialize<List<DiffEntry>>(t.DiffJson, Json) ?? [],
+        JsonSerializer.Deserialize<ValidationResult>(t.ValidationJson, Json)!,
+        t.CoverNote,
+        JsonSerializer.Deserialize<DefensePack>(t.DefensePackJson, Json)!,
+        JsonSerializer.Deserialize<List<string>>(t.EmphasisTagsJson, Json) ?? []));
+});
+
+// ---------- Prefill (review-then-apply) ----------
+
+app.MapPost("/api/prefill", async (PrefillRequest req, PrefillService prefill) =>
+    Results.Ok(await prefill.BuildAsync(req.CandidateId, req.JobId)));
+
+// ---------- Applications / tracker ----------
+
+app.MapPost("/api/applications", async (CreateApplicationRequest req, AppDbContext db) =>
+{
+    var existing = await db.Applications
+        .FirstOrDefaultAsync(a => a.CandidateId == req.CandidateId && a.JobPostingId == req.JobId);
+    if (existing is not null) return Results.Ok(await ToResponse(db, existing));
+
+    var app2 = new Application
+    {
+        Id = Guid.NewGuid(),
+        CandidateId = req.CandidateId,
+        JobPostingId = req.JobId,
+        TailoredResumeId = req.TailoredResumeId,
+        Status = req.TailoredResumeId is null ? ApplicationStatus.Saved : ApplicationStatus.Tailored
+    };
+    db.Applications.Add(app2);
+    await db.SaveChangesAsync();
+    return Results.Ok(await ToResponse(db, app2));
+});
+
+app.MapGet("/api/candidates/{id:guid}/applications", async (Guid id, AppDbContext db) =>
+{
+    var apps = await db.Applications.Include(a => a.JobPosting)
+        .Where(a => a.CandidateId == id).OrderByDescending(a => a.UpdatedAt).ToListAsync();
+    return Results.Ok(apps.Select(a => Map(a)));
+});
+
+app.MapPatch("/api/applications/{id:guid}", async (Guid id, UpdateApplicationRequest req, AppDbContext db) =>
+{
+    var a = await db.Applications.Include(x => x.JobPosting).FirstOrDefaultAsync(x => x.Id == id);
+    if (a is null) return Results.NotFound();
+
+    if (Enum.TryParse<ApplicationStatus>(req.Status, true, out var status))
+    {
+        if (status == ApplicationStatus.Applied && a.AppliedAt is null) a.AppliedAt = DateTimeOffset.UtcNow;
+        a.Status = status;
+    }
+    a.Notes = req.Notes ?? a.Notes;
+    a.UpdatedAt = DateTimeOffset.UtcNow;
+    await db.SaveChangesAsync();
+    return Results.Ok(Map(a));
+});
+
+// ---------- Insights (outcome loop) ----------
+
+app.MapGet("/api/candidates/{id:guid}/insights", async (Guid id, InsightsService insights) =>
+    Results.Ok(await insights.ComputeAsync(id)));
+
+app.Run();
+
+// ---------- helpers ----------
+
+
+static List<string> ValidateCandidate(CreateCandidateRequest req)
+{
+    var errors = new List<string>();
+    if (string.IsNullOrWhiteSpace(req.FullName)) errors.Add("Full name is required.");
+    if (string.IsNullOrWhiteSpace(req.Email) || !req.Email.Contains('@')) errors.Add("A valid email is required.");
+    if (string.IsNullOrWhiteSpace(req.BaseResumeText) || req.BaseResumeText.Trim().Length < 80)
+        errors.Add("Paste at least a few lines of resume text.");
+    return errors;
+}
+
+static List<string> ValidateIngest(IngestRequest req)
+{
+    var errors = new List<string>();
+    if (req.CandidateId == Guid.Empty) errors.Add("CandidateId is required.");
+    if (string.IsNullOrWhiteSpace(req.Query)) errors.Add("Job search query is required.");
+    if (req.MaxToScore < 1 || req.MaxToScore > 100) errors.Add("MaxToScore must be between 1 and 100.");
+    return errors;
+}
+
+
+static ApplicationResponse Map(Application a) => new(
+    a.Id, a.JobPostingId, a.JobPosting?.Title ?? "", a.JobPosting?.Company ?? "",
+    a.Status.ToString(), a.Notes, a.AppliedAt, a.CreatedAt, a.TailoredResumeId);
+
+static async Task<ApplicationResponse> ToResponse(AppDbContext db, Application a)
+{
+    await db.Entry(a).Reference(x => x.JobPosting).LoadAsync();
+    return Map(a);
+}
