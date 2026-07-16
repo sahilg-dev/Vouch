@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, getToken } from "./lib/api.js";
 import Auth from "./views/Auth.jsx";
+import ResetPassword from "./views/ResetPassword.jsx";
+import VerifyEmail from "./views/VerifyEmail.jsx";
 import Setup from "./views/Setup.jsx";
 import Discover from "./views/Discover.jsx";
 import Tracker from "./views/Tracker.jsx";
@@ -77,6 +79,8 @@ export default function App() {
 
   const authed = !!account;
 
+  const markVerified = () => setAccount((a) => (a ? { ...a, emailVerified: true } : a));
+
   return (
     <BrowserRouter>
       <Shell
@@ -90,13 +94,25 @@ export default function App() {
         onCandidate={onCandidate}
         switchCandidate={switchCandidate}
         logout={logout}
+        markVerified={markVerified}
       />
     </BrowserRouter>
   );
 }
 
-function Shell({ account, candidate, authed, loading, toast, flash, onAuthed, onCandidate, switchCandidate, logout }) {
+function Shell({ account, candidate, authed, loading, toast, flash, onAuthed, onCandidate, switchCandidate, logout, markVerified }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [newMatchCount, setNewMatchCount] = useState(0);
+
+  // Re-check on every route change: leaving Discover marks matches viewed there, so
+  // navigating away is the natural moment to reflect the badge clearing to 0, and
+  // landing anywhere else (e.g. back from a saved-search alert) picks up new counts.
+  useEffect(() => {
+    if (!candidate) return;
+    api.newMatchCount(candidate.id).then((r) => setNewMatchCount(r.count)).catch(() => {});
+  }, [candidate?.id, location.pathname]);
 
   const handleAuthed = async (r) => {
     await onAuthed(r);
@@ -108,8 +124,29 @@ function Shell({ account, candidate, authed, loading, toast, flash, onAuthed, on
     navigate("/login");
   };
 
+  const resendVerification = async () => {
+    try {
+      const r = await api.resendVerification();
+      flash(r.devLink ? `${r.message} (dev: check server logs or open the link)` : r.message);
+    } catch (e) {
+      flash(`Couldn't resend: ${e.message}`);
+    }
+  };
+
   return (
     <div className="shell">
+      {authed && account.emailVerified === false && !bannerDismissed && (
+        <div className="ledger flag" style={{ borderRadius: 0, justifyContent: "center" }}>
+          <span className="dot" />
+          Verify your email to secure your account.
+          <button className="btn ghost small" style={{ marginLeft: 10 }} onClick={resendVerification}>
+            Resend link
+          </button>
+          <button className="btn ghost small" onClick={() => setBannerDismissed(true)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="topbar">
         <div className="brand">
           <span className="mark">Vouch</span>
@@ -130,6 +167,14 @@ function Shell({ account, candidate, authed, loading, toast, flash, onAuthed, on
               style={{ opacity: candidate ? 1 : 0.4, pointerEvents: candidate ? "auto" : "none" }}
             >
               Discover
+              {newMatchCount > 0 && (
+                <span
+                  className="chip"
+                  style={{ marginLeft: 6, background: "var(--verified)", color: "#fff", borderColor: "var(--verified)" }}
+                >
+                  {newMatchCount}
+                </span>
+              )}
             </NavLink>
             <NavLink
               to="/tracker"
@@ -162,6 +207,8 @@ function Shell({ account, candidate, authed, loading, toast, flash, onAuthed, on
       <Routes>
         <Route path="/login" element={authed ? <Navigate to="/" replace /> : <Auth mode="login" onAuthed={handleAuthed} />} />
         <Route path="/signup" element={authed ? <Navigate to="/" replace /> : <Auth mode="signup" onAuthed={handleAuthed} />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/verify-email" element={<VerifyEmail onVerified={markVerified} />} />
         <Route
           path="/"
           element={

@@ -3,6 +3,7 @@ using System;
 using JobCopilot.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace JobCopilot.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260715222808_AddEmailVerified")]
+    partial class AddEmailVerified
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -125,9 +128,6 @@ namespace JobCopilot.Api.Migrations
 
                     b.Property<string>("Location")
                         .HasColumnType("text");
-
-                    b.Property<DateTimeOffset?>("MatchesLastViewedAt")
-                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Phone")
                         .HasColumnType("text");
@@ -253,51 +253,6 @@ namespace JobCopilot.Api.Migrations
                     b.ToTable("JobPostings");
                 });
 
-            modelBuilder.Entity("JobCopilot.Api.Domain.SavedSearch", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("CandidateId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Country")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("Enabled")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("GreenhouseCompaniesJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<DateTimeOffset?>("LastRunAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("LeverCompaniesJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<string>("Query")
-                        .IsRequired()
-                        .HasMaxLength(400)
-                        .HasColumnType("character varying(400)");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CandidateId");
-
-                    b.ToTable("SavedSearches");
-                });
-
             modelBuilder.Entity("JobCopilot.Api.Domain.TailoredResume", b =>
                 {
                     b.Property<Guid>("Id")
@@ -397,17 +352,6 @@ namespace JobCopilot.Api.Migrations
                     b.Navigation("Candidate");
 
                     b.Navigation("JobPosting");
-                });
-
-            modelBuilder.Entity("JobCopilot.Api.Domain.SavedSearch", b =>
-                {
-                    b.HasOne("JobCopilot.Api.Domain.Candidate", "Candidate")
-                        .WithMany()
-                        .HasForeignKey("CandidateId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Candidate");
                 });
 
             modelBuilder.Entity("JobCopilot.Api.Domain.TailoredResume", b =>

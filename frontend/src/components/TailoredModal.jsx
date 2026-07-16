@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api.js";
+import PracticeMode from "./PracticeMode.jsx";
 
 export default function TailoredModal({ candidate, match, onClose, onTailored, flash }) {
   const [tab, setTab] = useState("resume");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [downloading, setDownloading] = useState(null);
+  const [practicing, setPracticing] = useState(false);
   const started = useRef(false);
 
   const download = async (format) => {
@@ -120,11 +122,13 @@ export default function TailoredModal({ candidate, match, onClose, onTailored, f
             <div className="panel">
               {tab === "resume" && <ResumeTab content={data.content} cover={data.coverNote} />}
               {tab === "diff" && <DiffTab diff={data.diff} flags={data.validation.unsupportedClaims} />}
-              {tab === "defense" && <DefenseTab pack={data.defensePack} />}
+              {tab === "defense" && <DefenseTab pack={data.defensePack} onPractice={() => setPracticing(true)} />}
             </div>
           </>
         )}
       </div>
+
+      {practicing && data && <PracticeMode pack={data.defensePack} onClose={() => setPracticing(false)} />}
     </div>
   );
 }
@@ -181,10 +185,17 @@ function DiffTab({ diff, flags }) {
   );
 }
 
-function DefenseTab({ pack }) {
+function DefenseTab({ pack, onPractice }) {
   return (
     <div>
-      <span className="eyebrow">Likely questions</span>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span className="eyebrow">Likely questions</span>
+        {pack.likelyQuestions?.length > 0 && (
+          <button className="btn small" onClick={onPractice}>
+            Start practice
+          </button>
+        )}
+      </div>
       <div style={{ marginTop: 10 }}>
         {pack.likelyQuestions.map((q, i) => (
           <div key={i} className="qa">

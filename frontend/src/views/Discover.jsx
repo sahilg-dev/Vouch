@@ -24,6 +24,9 @@ export default function Discover({ candidate, flash }) {
   const [applyTarget, setApplyTarget] = useState(null);
   const [tailoredIds, setTailoredIds] = useState({}); // jobId -> tailoredResumeId
 
+  const [savedSearches, setSavedSearches] = useState([]);
+  const [savingSearch, setSavingSearch] = useState(false);
+
   const load = async (s = sort) => {
     setLoading(true);
     try {
@@ -35,9 +38,37 @@ export default function Discover({ candidate, flash }) {
     }
   };
 
+  const loadSavedSearches = () => api.savedSearches(candidate.id).then(setSavedSearches).catch(() => {});
+
   useEffect(() => {
     load();
+    loadSavedSearches();
+    // Visiting Discover is the natural "seen it" moment for the new-match badge.
+    api.markMatchesViewed(candidate.id).catch(() => {});
   }, [candidate.id]);
+
+  const saveSearch = async () => {
+    setSavingSearch(true);
+    try {
+      await api.createSavedSearch(candidate.id, {
+        query,
+        country,
+        greenhouseCompanies: gh.split(",").map((s) => s.trim()).filter(Boolean),
+        leverCompanies: lever.split(",").map((s) => s.trim()).filter(Boolean),
+      });
+      flash("Saved — this search will re-run automatically and surface new matches.");
+      await loadSavedSearches();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSavingSearch(false);
+    }
+  };
+
+  const removeSavedSearch = async (id) => {
+    await api.deleteSavedSearch(id);
+    await loadSavedSearches();
+  };
 
   const ingest = async () => {
     setIngesting(true);
@@ -142,7 +173,7 @@ export default function Discover({ candidate, flash }) {
           Slugs are the company name in their careers URL, e.g. boards.greenhouse.io/<strong>stripe</strong>.
           Adzuna needs API keys in <code>.env</code>; company boards work without keys.
         </p>
-        <div>
+        <div style={{ display: "flex", gap: 10 }}>
           <button className="btn" onClick={ingest} disabled={ingesting}>
             {ingesting ? (
               <>
@@ -152,8 +183,34 @@ export default function Discover({ candidate, flash }) {
               "Search & score"
             )}
           </button>
+          <button className="btn ghost small" onClick={saveSearch} disabled={savingSearch || !query.trim()}>
+            {savingSearch ? "Saving…" : "Save this search"}
+          </button>
         </div>
         {error && <div className="ledger flag"><span className="dot" />{error}</div>}
+
+        {savedSearches.length > 0 && (
+          <div style={{ marginTop: 4 }}>
+            <span className="eyebrow">Saved searches (re-run automatically)</span>
+            <div style={{ marginTop: 8 }}>
+              {savedSearches.map((s) => (
+                <div key={s.id} className="tagrow" style={{ gridTemplateColumns: "1fr auto auto" }}>
+                  <span>
+                    {s.query}
+                    {s.greenhouseCompanies.length > 0 && ` · GH: ${s.greenhouseCompanies.join(", ")}`}
+                    {s.leverCompanies.length > 0 && ` · Lever: ${s.leverCompanies.join(", ")}`}
+                  </span>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {s.lastRunAt ? `last ran ${new Date(s.lastRunAt).toLocaleString()}` : "not run yet"}
+                  </span>
+                  <button className="btn ghost small" onClick={() => removeSavedSearch(s.id)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="card panel stack" style={{ marginTop: 14 }}>

@@ -12,18 +12,35 @@ export default function Setup({ candidate, onCandidate }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [addingAnother, setAddingAnother] = useState(false);
+  const [extracting, setExtracting] = useState(false);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   const loadResumeFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.name.match(/\.(txt|md|text)$/i)) {
-      setError("For now, upload a .txt or .md resume file, or paste your resume text below.");
+    setError(null);
+
+    if (file.name.match(/\.(txt|md|text)$/i)) {
+      const text = await file.text();
+      setForm((current) => ({ ...current, baseResumeText: text }));
       return;
     }
-    const text = await file.text();
-    setForm((current) => ({ ...current, baseResumeText: text }));
+
+    if (!file.name.match(/\.(pdf|docx)$/i)) {
+      setError("Upload a .pdf, .docx, .txt, or .md resume file, or paste your resume text below.");
+      return;
+    }
+
+    setExtracting(true);
+    try {
+      const text = await api.extractResumeText(file);
+      setForm((current) => ({ ...current, baseResumeText: text }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExtracting(false);
+    }
   };
 
   const submit = async () => {
@@ -118,8 +135,18 @@ export default function Setup({ candidate, onCandidate }) {
             </div>
           </div>
           <div>
-            <label>Upload resume text file (.txt/.md) or paste your base resume</label>
-            <input type="file" accept=".txt,.md,text/plain" onChange={loadResumeFile} />
+            <label>Upload a resume (.pdf, .docx, .txt, .md) or paste your base resume</label>
+            <input
+              type="file"
+              accept=".pdf,.docx,.txt,.md,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              onChange={loadResumeFile}
+              disabled={extracting}
+            />
+            {extracting && (
+              <p className="muted" style={{ fontSize: 13, margin: "8px 0 0" }}>
+                <span className="spinner" /> Extracting text from your file…
+              </p>
+            )}
             <textarea
               value={form.baseResumeText}
               onChange={set("baseResumeText")}

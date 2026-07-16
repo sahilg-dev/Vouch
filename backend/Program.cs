@@ -53,6 +53,8 @@ builder.Services.AddScoped<PrefillService>();
 builder.Services.AddScoped<InsightsService>();
 builder.Services.AddScoped<JobIngestionService>();
 builder.Services.AddScoped<ResumeExportService>();
+builder.Services.AddScoped<ResumeTextExtractionService>();
+builder.Services.AddHostedService<MatchAlertBackgroundService>();
 
 var frontendOrigin = Need("FRONTEND_ORIGIN", "http://localhost:5173");
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
@@ -76,6 +78,18 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateIssuer = false,
             ValidateAudience = false,
             ValidateLifetime = true
+        };
+        // Password-reset/email-verify tokens are signed with the same key so they can
+        // be validated with the same handler, but they must never work as a login
+        // credential — reject any token carrying a "purpose" claim here.
+        o.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = ctx =>
+            {
+                if (ctx.Principal?.HasClaim(c => c.Type == "purpose") == true)
+                    ctx.Fail("This token cannot be used to authenticate.");
+                return Task.CompletedTask;
+            }
         };
     });
 builder.Services.AddAuthorization();
@@ -119,6 +133,63 @@ string IssueToken(Account account)
     return new JwtSecurityTokenHandler().WriteToken(token);
 }
 
+// Short-lived, single-purpose tokens for password reset / email verification. Reuses
+// the login JWT's signing key so no separate token table is needed — the "purpose"
+// claim is what the JwtBearer pipeline above rejects if someone tries to use one of
+// these as a Bearer login credential instead of a login token. `pwv` (password-reset
+// tokens only) binds the token to the account's current password hash at issuance
+// time, so a successful reset — which changes that hash — silently invalidates any
+// other outstanding reset link for the same account, without needing a token table.
+static string ShortHash(string s) =>
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(s)))[..16];
+
+string IssuePurposeToken(Account account, string purpose, TimeSpan ttl)
+{
+    var claims = new List<Claim>
+    {
+        new(ClaimTypes.NameIdentifier, account.Id.ToString()),
+        new("purpose", purpose)
+    };
+    if (purpose == "password-reset") claims.Add(new Claim("pwv", ShortHash(account.PasswordHash)));
+
+    var creds = new SigningCredentials(jwtKey, SecurityAlgorithms.HmacSha256);
+    var token = new JwtSecurityToken(claims: claims, expires: DateTime.UtcNow.Add(ttl), signingCredentials: creds);
+    return new JwtSecurityTokenHandler().WriteToken(token);
+}
+
+bool TryValidatePurposeToken(string token, string expectedPurpose, AppDbContext db, out Guid accountId)
+{
+    accountId = Guid.Empty;
+    try
+    {
+        var principal = new JwtSecurityTokenHandler().ValidateToken(token, new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = jwtKey,
+            ValidateIssuer = false,
+            ValidateAudience = false,
+            ValidateLifetime = true
+        }, out _);
+
+        if (principal.FindFirstValue("purpose") != expectedPurpose) return false;
+        var id = Guid.Parse(principal.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        if (expectedPurpose == "password-reset")
+        {
+            var pwv = principal.FindFirstValue("pwv");
+            var currentHash = db.Accounts.Where(a => a.Id == id).Select(a => a.PasswordHash).FirstOrDefault();
+            if (currentHash is null || pwv != ShortHash(currentHash)) return false;
+        }
+
+        accountId = id;
+        return true;
+    }
+    catch (Exception ex) when (ex is SecurityTokenException or ArgumentException or FormatException)
+    {
+        return false;
+    }
+}
+
 app.MapPost("/api/auth/signup", async (SignupRequest req, AppDbContext db) =>
 {
     var email = req.Email?.Trim().ToLowerInvariant() ?? "";
@@ -135,7 +206,7 @@ app.MapPost("/api/auth/signup", async (SignupRequest req, AppDbContext db) =>
     db.Accounts.Add(account);
     await db.SaveChangesAsync();
 
-    return Results.Ok(new AuthResponse(IssueToken(account), account.Id, account.Email));
+    return Results.Ok(new AuthResponse(IssueToken(account), account.Id, account.Email, account.EmailVerified));
 });
 
 app.MapPost("/api/auth/login", async (LoginRequest req, AppDbContext db) =>
@@ -145,7 +216,7 @@ app.MapPost("/api/auth/login", async (LoginRequest req, AppDbContext db) =>
     if (account is null || !BCrypt.Net.BCrypt.Verify(req.Password ?? "", account.PasswordHash))
         return Results.Unauthorized();
 
-    return Results.Ok(new AuthResponse(IssueToken(account), account.Id, account.Email));
+    return Results.Ok(new AuthResponse(IssueToken(account), account.Id, account.Email, account.EmailVerified));
 });
 
 app.MapGet("/api/auth/me", async (ClaimsPrincipal user, AppDbContext db) =>
@@ -160,12 +231,102 @@ app.MapGet("/api/auth/me", async (ClaimsPrincipal user, AppDbContext db) =>
         JsonSerializer.Deserialize<CandidateProfile>(c.ProfileJson, Json)!,
         (JsonSerializer.Deserialize<List<ResumeFact>>(c.FactsJson, Json) ?? []).Count)).ToList();
 
-    return Results.Ok(new MeResponse(account.Id, account.Email, responses));
+    return Results.Ok(new MeResponse(account.Id, account.Email, account.EmailVerified, responses));
 }).RequireAuthorization();
 
-// ---------- Candidates ----------
+// No real email provider in this environment — the link is always logged, and only
+// echoed back in the response when running in Development so the flow stays testable
+// without reading server logs. A real deployment swaps the LogInformation call for an
+// actual email send; nothing about the token logic needs to change.
+app.MapPost("/api/auth/forgot-password", async (ForgotPasswordRequest req, AppDbContext db) =>
+{
+    var email = req.Email?.Trim().ToLowerInvariant() ?? "";
+    var account = await db.Accounts.FirstOrDefaultAsync(a => a.Email == email);
+
+    string? link = null;
+    if (account is not null)
+    {
+        var token = IssuePurposeToken(account, "password-reset", TimeSpan.FromMinutes(30));
+        link = $"{frontendOrigin}/reset-password?token={token}";
+        app.Logger.LogInformation("Password reset requested for {Email}: {Link}", email, link);
+    }
+
+    // Always the same response regardless of whether the account exists, so callers
+    // can't use this endpoint to enumerate registered emails.
+    return Results.Ok(new ForgotPasswordResponse(
+        "If that email has an account, a reset link has been sent.",
+        app.Environment.IsDevelopment() ? link : null));
+});
+
+app.MapPost("/api/auth/reset-password", async (ResetPasswordRequest req, AppDbContext db) =>
+{
+    if (!TryValidatePurposeToken(req.Token, "password-reset", db, out var accountId))
+        return Results.BadRequest(new { errors = new[] { "That reset link is invalid or has expired." } });
+
+    if (string.IsNullOrWhiteSpace(req.NewPassword) || req.NewPassword.Length < 8)
+        return Results.BadRequest(new { errors = new[] { "Password must be at least 8 characters." } });
+
+    var account = await db.Accounts.FindAsync(accountId);
+    if (account is null) return Results.BadRequest(new { errors = new[] { "That reset link is invalid or has expired." } });
+
+    account.PasswordHash = BCrypt.Net.BCrypt.HashPassword(req.NewPassword);
+    account.UpdatedAt = DateTimeOffset.UtcNow;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Password updated — you can log in now." });
+});
+
+app.MapPost("/api/auth/resend-verification", async (ClaimsPrincipal user, AppDbContext db) =>
+{
+    var accountId = user.GetAccountId();
+    var account = await db.Accounts.FindAsync(accountId);
+    if (account is null) return Results.NotFound();
+    if (account.EmailVerified) return Results.Ok(new ResendVerificationResponse("Your email is already verified.", null));
+
+    var token = IssuePurposeToken(account, "email-verify", TimeSpan.FromHours(24));
+    var link = $"{frontendOrigin}/verify-email?token={token}";
+    app.Logger.LogInformation("Email verification requested for {Email}: {Link}", account.Email, link);
+
+    return Results.Ok(new ResendVerificationResponse(
+        "Verification link sent.", app.Environment.IsDevelopment() ? link : null));
+}).RequireAuthorization();
+
+app.MapGet("/api/auth/verify-email", async (string token, AppDbContext db) =>
+{
+    if (!TryValidatePurposeToken(token, "email-verify", db, out var accountId))
+        return Results.BadRequest(new { errors = new[] { "That verification link is invalid or has expired." } });
+
+    var account = await db.Accounts.FindAsync(accountId);
+    if (account is null) return Results.NotFound();
+
+    account.EmailVerified = true;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { message = "Email verified." });
+});
 
 var api = app.MapGroup("/api").RequireAuthorization();
+
+// ---------- Resume upload ----------
+
+api.MapPost("/resumes/extract-text", async (HttpRequest req, ResumeTextExtractionService extractor) =>
+{
+    if (!req.HasFormContentType) return Results.BadRequest(new { errors = new[] { "Expected a multipart/form-data file upload." } });
+    var form = await req.ReadFormAsync();
+    var file = form.Files.GetFile("file");
+    if (file is null || file.Length == 0) return Results.BadRequest(new { errors = new[] { "No file uploaded." } });
+
+    try
+    {
+        using var stream = file.OpenReadStream();
+        var text = await extractor.ExtractAsync(stream, file.FileName);
+        return Results.Ok(new { text });
+    }
+    catch (ResumeTextExtractionException ex)
+    {
+        return Results.BadRequest(new { errors = new[] { ex.Message } });
+    }
+});
+
+// ---------- Candidates ----------
 
 api.MapPost("/candidates", async (CreateCandidateRequest req, ClaimsPrincipal user, AppDbContext db, ResumeParsingService parser) =>
 {
@@ -278,6 +439,62 @@ api.MapGet("/candidates/{id:guid}/matches", async (Guid id, string? sort, Claims
             j.PostedAt, m.Score, m.Headline, r.Strengths, r.Gaps, j.SalaryMin, j.SalaryMax);
     });
     return Results.Ok(result);
+});
+
+// ---------- Saved searches / match alerts ----------
+
+api.MapPost("/candidates/{id:guid}/saved-searches", async (Guid id, CreateSavedSearchRequest req, ClaimsPrincipal user, AppDbContext db) =>
+{
+    if (await OwnedCandidateAsync(db, id, user.GetAccountId()) is null) return Results.NotFound();
+    if (string.IsNullOrWhiteSpace(req.Query)) return Results.BadRequest(new { errors = new[] { "A search query is required." } });
+
+    var search = new SavedSearch
+    {
+        Id = Guid.NewGuid(),
+        CandidateId = id,
+        Query = req.Query.Trim(),
+        Country = string.IsNullOrWhiteSpace(req.Country) ? "us" : req.Country,
+        GreenhouseCompaniesJson = JsonSerializer.Serialize(req.GreenhouseCompanies ?? [], Json),
+        LeverCompaniesJson = JsonSerializer.Serialize(req.LeverCompanies ?? [], Json)
+    };
+    db.SavedSearches.Add(search);
+    await db.SaveChangesAsync();
+    return Results.Ok(ToSavedSearchResponse(search, Json));
+});
+
+api.MapGet("/candidates/{id:guid}/saved-searches", async (Guid id, ClaimsPrincipal user, AppDbContext db) =>
+{
+    if (await OwnedCandidateAsync(db, id, user.GetAccountId()) is null) return Results.NotFound();
+    var searches = await db.SavedSearches.Where(s => s.CandidateId == id).OrderByDescending(s => s.CreatedAt).ToListAsync();
+    return Results.Ok(searches.Select(s => ToSavedSearchResponse(s, Json)));
+});
+
+api.MapDelete("/saved-searches/{id:guid}", async (Guid id, ClaimsPrincipal user, AppDbContext db) =>
+{
+    var search = await db.SavedSearches.Include(s => s.Candidate).FirstOrDefaultAsync(s => s.Id == id);
+    if (search is null || search.Candidate?.AccountId != user.GetAccountId()) return Results.NotFound();
+    db.SavedSearches.Remove(search);
+    await db.SaveChangesAsync();
+    return Results.Ok();
+});
+
+api.MapGet("/candidates/{id:guid}/matches/new-count", async (Guid id, ClaimsPrincipal user, AppDbContext db) =>
+{
+    var candidate = await OwnedCandidateAsync(db, id, user.GetAccountId());
+    if (candidate is null) return Results.NotFound();
+
+    var count = await db.JobMatches.CountAsync(m => m.CandidateId == id &&
+        (candidate.MatchesLastViewedAt == null || m.CreatedAt > candidate.MatchesLastViewedAt));
+    return Results.Ok(new NewMatchCountResponse(count));
+});
+
+api.MapPost("/candidates/{id:guid}/matches/mark-viewed", async (Guid id, ClaimsPrincipal user, AppDbContext db) =>
+{
+    var candidate = await OwnedCandidateAsync(db, id, user.GetAccountId());
+    if (candidate is null) return Results.NotFound();
+    candidate.MatchesLastViewedAt = DateTimeOffset.UtcNow;
+    await db.SaveChangesAsync();
+    return Results.Ok();
 });
 
 // ---------- Tailoring (Honesty Ledger + validation + Defense Pack) ----------
@@ -480,3 +697,9 @@ static async Task<ApplicationResponse> ToResponse(AppDbContext db, Application a
 // "not found" from "not yours."
 static Task<Candidate?> OwnedCandidateAsync(AppDbContext db, Guid candidateId, Guid accountId) =>
     db.Candidates.FirstOrDefaultAsync(c => c.Id == candidateId && c.AccountId == accountId);
+
+static SavedSearchResponse ToSavedSearchResponse(SavedSearch s, JsonSerializerOptions json) => new(
+    s.Id, s.Query, s.Country,
+    JsonSerializer.Deserialize<List<string>>(s.GreenhouseCompaniesJson, json) ?? [],
+    JsonSerializer.Deserialize<List<string>>(s.LeverCompaniesJson, json) ?? [],
+    s.Enabled, s.LastRunAt);

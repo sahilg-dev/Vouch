@@ -42,6 +42,12 @@ export const api = {
     }),
   me: () => req("/api/auth/me"),
   logout: () => setToken(null),
+  forgotPassword: (email) =>
+    req("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
+  resetPassword: (token, newPassword) =>
+    req("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ token, newPassword }) }),
+  resendVerification: () => req("/api/auth/resend-verification", { method: "POST" }),
+  verifyEmail: (token) => req(`/api/auth/verify-email?token=${encodeURIComponent(token)}`),
 
   // ---- candidates ----
   createCandidate: (body) =>
@@ -62,6 +68,31 @@ export const api = {
   updateApplication: (id, body) =>
     req(`/api/applications/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   insights: (id) => req(`/api/candidates/${id}/insights`),
+
+  // ---- saved searches / match alerts ----
+  createSavedSearch: (candidateId, body) =>
+    req(`/api/candidates/${candidateId}/saved-searches`, { method: "POST", body: JSON.stringify(body) }),
+  savedSearches: (candidateId) => req(`/api/candidates/${candidateId}/saved-searches`),
+  deleteSavedSearch: (id) => req(`/api/saved-searches/${id}`, { method: "DELETE" }),
+  newMatchCount: (candidateId) => req(`/api/candidates/${candidateId}/matches/new-count`),
+  markMatchesViewed: (candidateId) =>
+    req(`/api/candidates/${candidateId}/matches/mark-viewed`, { method: "POST" }),
+
+  // ---- resume upload ----
+  async extractResumeText(file) {
+    const body = new FormData();
+    body.append("file", file);
+    const res = await fetch(`${BASE}/api/resumes/extract-text`, {
+      method: "POST",
+      headers: authHeaders(),
+      body,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.errors?.[0] || `Extraction failed: ${res.status}`);
+    }
+    return (await res.json()).text;
+  },
 
   // ---- resume export ----
   async downloadTailored(id, format, fileName) {

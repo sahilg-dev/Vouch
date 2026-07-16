@@ -22,6 +22,7 @@ public class Account : AuditableEntity<Guid>
     /// <summary>Always stored lower-cased/trimmed; uniqueness is enforced on this form.</summary>
     public string Email { get; set; } = "";
     public string PasswordHash { get; set; } = "";
+    public bool EmailVerified { get; set; }
 }
 
 /// <summary>The candidate, their contact info, and their parsed "fact base".</summary>
@@ -50,6 +51,32 @@ public class Candidate : AuditableEntity<Guid>
     /// this is what makes the tailoring honest rather than generative.
     /// </summary>
     public string FactsJson { get; set; } = "[]";
+
+    /// <summary>
+    /// Last time this candidate's Discover matches were viewed. Drives the "N new
+    /// matches" badge — null means every match is unread.
+    /// </summary>
+    public DateTimeOffset? MatchesLastViewedAt { get; set; }
+}
+
+/// <summary>
+/// A persisted job search that the match-alert background job re-runs on a timer,
+/// so new postings surface without the candidate re-clicking "Search &amp; score".
+/// </summary>
+public class SavedSearch : AuditableEntity<Guid>
+{
+    public Guid CandidateId { get; set; }
+    public Candidate? Candidate { get; set; }
+
+    public string Query { get; set; } = "";
+    public string Country { get; set; } = "us";
+
+    /// <summary>JSON string[] — same shape as the other List&lt;string&gt; JSON columns.</summary>
+    public string GreenhouseCompaniesJson { get; set; } = "[]";
+    public string LeverCompaniesJson { get; set; } = "[]";
+
+    public bool Enabled { get; set; } = true;
+    public DateTimeOffset? LastRunAt { get; set; }
 }
 
 /// <summary>A normalized job posting from any source.</summary>

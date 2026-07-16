@@ -6,9 +6,19 @@ public record SignupRequest(string Email, string Password);
 
 public record LoginRequest(string Email, string Password);
 
-public record AuthResponse(string Token, Guid AccountId, string Email);
+public record AuthResponse(string Token, Guid AccountId, string Email, bool EmailVerified);
 
-public record MeResponse(Guid AccountId, string Email, List<CandidateResponse> Candidates);
+public record MeResponse(Guid AccountId, string Email, bool EmailVerified, List<CandidateResponse> Candidates);
+
+public record ForgotPasswordRequest(string Email);
+
+// DevLink is only ever populated when running in Development — there is no email
+// provider in this environment, so the reset/verify link is otherwise only logged.
+public record ForgotPasswordResponse(string Message, string? DevLink);
+
+public record ResetPasswordRequest(string Token, string NewPassword);
+
+public record ResendVerificationResponse(string Message, string? DevLink);
 
 // ---------- Candidate / profile ----------
 
@@ -137,6 +147,17 @@ public record UpdateApplicationRequest(string Status, string? Notes);
 public record ApplicationResponse(
     Guid Id, Guid JobId, string Title, string Company, string Status,
     string? Notes, DateTimeOffset? AppliedAt, DateTimeOffset CreatedAt, Guid? TailoredResumeId);
+
+// ---------- Saved searches / match alerts ----------
+
+public record CreateSavedSearchRequest(
+    string Query, string Country, List<string>? GreenhouseCompanies, List<string>? LeverCompanies);
+
+public record SavedSearchResponse(
+    Guid Id, string Query, string Country, List<string> GreenhouseCompanies, List<string> LeverCompanies,
+    bool Enabled, DateTimeOffset? LastRunAt);
+
+public record NewMatchCountResponse(int Count);
 
 // ---------- Insights (differentiator pillar 3: the outcome loop) ----------
 

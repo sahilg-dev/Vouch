@@ -12,6 +12,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<JobMatch> JobMatches => Set<JobMatch>();
     public DbSet<TailoredResume> TailoredResumes => Set<TailoredResume>();
     public DbSet<Application> Applications => Set<Application>();
+    public DbSet<SavedSearch> SavedSearches => Set<SavedSearch>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -61,6 +62,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         b.Entity<Application>(e =>
         {
             e.HasOne(x => x.JobPosting).WithMany().HasForeignKey(x => x.JobPostingId);
+            e.HasOne(x => x.Candidate).WithMany().HasForeignKey(x => x.CandidateId);
+            e.HasIndex(x => x.CandidateId);
+        });
+
+        b.Entity<SavedSearch>(e =>
+        {
+            e.Property(x => x.Query).HasMaxLength(400);
+            e.Property(x => x.GreenhouseCompaniesJson).HasColumnType("jsonb");
+            e.Property(x => x.LeverCompaniesJson).HasColumnType("jsonb");
             e.HasOne(x => x.Candidate).WithMany().HasForeignKey(x => x.CandidateId);
             e.HasIndex(x => x.CandidateId);
         });
